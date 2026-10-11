@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>Brick Viewer</title>
-<meta name="description" content="Read-only 3D viewer for Stud.io .io files. Orbit, zoom, replay build steps and browse the parts list.">
+<meta name="description" content="Read-only 3D viewer for Stud.io .io and LDraw files. Orbit, zoom, replay build steps and browse the parts list.">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -182,7 +182,7 @@
       <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true"><rect x="3" y="9" width="20" height="13" rx="2.5" fill="var(--accent)"/><rect x="7" y="5" width="5" height="5" rx="1.2" fill="var(--accent)"/><rect x="14" y="5" width="5" height="5" rx="1.2" fill="var(--accent)"/></svg>
       <div style="min-width:0">
         <div class="name" id="modelName">Brick Viewer</div>
-        <div class="meta" id="modelMeta">Open a Stud.io .io file</div>
+        <div class="meta" id="modelMeta">Open a Stud.io or LDraw file</div>
       </div>
     </div>
     <button class="iconbtn" id="btnParts" aria-label="Parts list" title="Parts list">
@@ -217,7 +217,7 @@
       <div class="err" id="ovErr" hidden></div>
       <button class="btn primary" id="ovOpen" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-        Open a .io file
+        Open a file
       </button>
     </div>
   </div>
@@ -259,9 +259,9 @@
       <input type="file" id="fileInput" hidden>
       <button class="btn primary" id="btnPick">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>
-        Choose a .io file from Files
+        Choose a file from Files
       </button>
-      <p class="hint" style="text-align:left">On iPhone this opens the Files app, so anything in iCloud Drive or a synced folder works. Files are only read, never changed.</p>
+      <p class="hint" style="text-align:left">Stud.io .io files, plus LDraw .ldr / .mpd files (their part shapes are fetched from the LDraw library). On iPhone this opens the Files app, so anything in iCloud Drive or a synced folder works. Files are only read, never changed.</p>
       <div class="section-title">Recent</div>
       <ul class="recent" id="recentList"></ul>
       <p class="hint" id="recentEmpty" style="text-align:left">Files you open are kept on this device for quick reopening.</p>
@@ -855,8 +855,11 @@ function loop() {
 loop();
 
 // ------------------------------------------------------------------ loader
-function makeLoader() {
-  const loader = new LDrawLoader();
+// Parts library for plain LDraw files (.ldr / .mpd). Empty string = not available in this build.
+const LDRAW_LIBRARY = 'https://raw.githubusercontent.com/gkjohnson/ldraw-parts-library/master/complete/ldraw/';
+
+function makeLoader(manager) {
+  const loader = new LDrawLoader(manager);
   loader.setConditionalLineMaterial(LDrawConditionalLineMaterial);
   loader.smoothNormals = settings.smooth;
   loader.setMaterials([]);
@@ -883,6 +886,7 @@ function showError(title, text) {
   ovErr.hidden = true; ovProgress.hidden = true; ovOpen.hidden = false; thumb.hidden = true;
 }
 const nextFrame = () => new Promise(r => setTimeout(r, 30));
+const baseName = (n) => n.replace(/\.(io|ldr|mpd|dat)$/i, '');
 
 function disposeModel() {
   if (!current.model) return;
@@ -891,64 +895,169 @@ function disposeModel() {
   current.model = null; current.edges = [];
 }
 
+// Summarise a plain LDraw / MPD file: name, part counts (sub-models placed more than once count
+// each time), build steps, and the list of part files to describe.
+function summariseLdraw(text) {
+  const sections = []; let cur = null;
+  for (const raw of text.replace(/^﻿/, '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (/^0\s+FILE\s/i.test(line)) { cur = { name: line.replace(/^0\s+FILE\s+/i, '').trim(), lines: [] }; sections.push(cur); continue; }
+    if (/^0\s+NOFILE/i.test(line)) { cur = null; continue; }
+    if (!cur) { if (!sections.length && line) { cur = { name: '', lines: [] }; sections.push(cur); } else continue; }
+    cur.lines.push(line);
+  }
+  if (!sections.length) throw new Error('No LDraw content found in this file.');
+  const byKey = new Map(sections.map(s => [s.name.toLowerCase(), s]));
+  const refs = (s) => s.lines.filter(l => /^1\s/.test(l)).map(l => { const m = l.match(/^1\s+(\S+)(?:\s+[-+0-9.eE]+){12}\s+(.+)$/); return m ? { colour: m[1], ref: m[2].trim().replace(/\\/g, '/') } : null; }).filter(Boolean);
+  const mult = new Map();
+  const visit = (s, times, depth) => {
+    if (depth > 32) return;
+    mult.set(s, (mult.get(s) || 0) + times);
+    for (const r of refs(s)) { const sub = byKey.get(r.ref.toLowerCase()); if (sub && sub !== s) visit(sub, times, depth + 1); }
+  };
+  visit(sections[0], 1, 0);
+  const lots = new Map(); let total = 0, steps = 0;
+  for (const s of sections) {
+    const times = mult.get(s) || 0; if (!times) continue;
+    steps += s.lines.filter(l => /^0\s+STEP\s*$/i.test(l)).length;
+    for (const r of refs(s)) {
+      if (byKey.has(r.ref.toLowerCase())) continue;
+      total += times;
+      const part = r.ref.replace(/\.dat$/i, '');
+      const k = part.toLowerCase() + '|' + r.colour;
+      const c = LD_COLOURS[r.colour];
+      const e = lots.get(k) || { part, ref: r.ref, colour: r.colour, colourName: c ? c.name : (/^0x2/i.test(r.colour) ? 'Custom #' + r.colour.slice(3) : `Colour ${r.colour}`), hex: c ? c.value : (/^0x2/i.test(r.colour) ? '#' + r.colour.slice(3) : '#9a9a9a'), desc: part, qty: 0 };
+      e.qty += times; lots.set(k, e);
+    }
+  }
+  let name = sections[0].name || '';
+  const nameLine = sections[0].lines.find(l => /^0\s+Name:/i.test(l));
+  if (!name && nameLine) name = nameLine.replace(/^0\s+Name:\s*/i, '');
+  if (!name) { const first = sections[0].lines.find(l => /^0\s+\S/.test(l) && !/^0\s+!/.test(l)); name = first ? first.replace(/^0\s+/, '') : ''; }
+  const parts = [...lots.values()].sort((a, b) => b.qty - a.qty || a.part.localeCompare(b.part));
+  return { name: baseName(name), partTotal: total, uniqueParts: parts.length, stepCount: steps, subModels: Math.max(0, [...mult.keys()].length - 1), parts, text: text.replace(/^﻿/, '') };
+}
+
+// Fetch the first line of each part file (its description) for the parts list.
+async function describeParts(parts, onProgress) {
+  const queue = parts.slice(); let done = 0;
+  const worker = async () => {
+    while (queue.length) {
+      const p = queue.shift();
+      let file = p.ref.toLowerCase();
+      for (let hop = 0; hop < 3 && file; hop++) {         // follow "~Moved to" aliases
+        let first = null;
+        for (const dir of (/^s\//.test(file) ? ['parts/'] : /^(48|8)\//.test(file) ? ['p/'] : ['parts/', 'p/'])) {
+          try {
+            const r = await fetch(LDRAW_LIBRARY + dir + file);
+            if (!r.ok) continue;
+            first = (await r.text()).split('\n')[0].replace(/^0\s+/, '').replace(/\s+/g, ' ').trim();
+            break;
+          } catch (_) { break; }
+        }
+        if (!first) break;
+        const moved = first.match(/^~?Moved to (\S+)/i);
+        if (moved) { file = moved[1].toLowerCase() + (/\.dat$/i.test(moved[1]) ? '' : '.dat'); continue; }
+        p.desc = first.replace(/^[~_=]+/, '');
+        break;
+      }
+      done++; onProgress && onProgress(done, parts.length);
+    }
+  };
+  await Promise.all(Array.from({ length: 6 }, worker));
+}
+
+async function showModel(group, meta, file, ms) {
+  disposeModel();
+  current.model = group; world.add(group);
+  current.steps = Math.max(1, group.userData.numBuildingSteps || 1);
+  current.parts = meta.parts;
+  current.edges = [];
+  group.traverse(o => { if (o.isLineSegments) current.edges.push(o); });
+  applyEdges();
+  setStep(current.steps);
+  fitView();
+  modelName.textContent = meta.name || baseName(file.name);
+  modelMeta.textContent = `${meta.partTotal} parts · ${meta.uniqueParts} lots${meta.subModels ? ` · ${meta.subModels} sub-model${meta.subModels > 1 ? 's' : ''}` : ''}`;
+  renderParts(meta.parts);
+  $('fileInfo').textContent = [
+    file.name, meta.source, `${meta.partTotal} parts, ${meta.uniqueParts} lots`,
+    `${current.steps} build step${current.steps > 1 ? 's' : ''}`, `built in ${(ms / 1000).toFixed(1)} s`,
+  ].join(' · ');
+  const wl = $('warnList'); wl.innerHTML = ''; wl.hidden = !meta.warnings.length;
+  for (const w of meta.warnings) { const li = document.createElement('li'); li.textContent = w; wl.appendChild(li); }
+  overlay.hidden = true; rail.hidden = false;
+}
+
 async function openFile(file, { keepRecent = false } = {}) {
   current.file = file;
   thumb.hidden = true;
-  setStatus(file.name.replace(/\.io$/i, ''), 'Reading the archive.', `${(file.size / 1024).toFixed(0)} KB`);
+  setStatus(baseName(file.name), 'Reading the file.', `${(file.size / 1024).toFixed(0)} KB`);
   try {
     const buf = new Uint8Array(await file.arrayBuffer());
     await nextFrame();
-    let zip;
-    try { zip = unzipSync(buf); } catch (e) { throw new Error('This file is not a readable Stud.io archive. It should be a .io file saved by Stud.io 2.x.'); }
-    const names = Object.keys(zip);
-    if (zip['thumbnail.png']) {
-      try { thumb.src = URL.createObjectURL(new Blob([zip['thumbnail.png']], { type: 'image/png' })); thumb.hidden = false; } catch (_) {}
-    }
-    const model2 = zip['model2.ldr'] ? strFromU8(zip['model2.ldr']) : null;
-    const model = zip['model.ldr'] ? strFromU8(zip['model.ldr']) : null;
-    if (!model2 && !model) throw new Error(`No model found inside the archive (files: ${names.join(', ') || 'none'}).`);
-    if (!model2) throw new Error('This .io file does not embed part geometry (no model2.ldr), so there is nothing to draw without a parts library.');
-    let info = {};
-    try { info = JSON.parse(strFromU8(zip['.info'] || new Uint8Array())) || {}; } catch (_) {}
-
-    setStatus(file.name.replace(/\.io$/i, ''), 'Matching colours and parts.', model2.length > 1e6 ? `${(model2.length / 1048576).toFixed(1)} MB of geometry` : '');
-    await nextFrame();
-    const conv = convertIo(model || model2, model2, LD_COLOURS, { certify: true });
-
-    setStatus(conv.name, `Building ${conv.partTotal} parts${conv.stepCount ? ` across ${conv.stepCount + 1} steps` : ''}.`, settings.smooth ? 'Smooth shading on' : 'Flat shading');
-    await nextFrame();
-
-    const loader = makeLoader();
-    const t0 = performance.now();
-    const group = await new Promise((resolve, reject) => loader.parse(conv.text, resolve, reject));
-    const ms = performance.now() - t0;
-
-    disposeModel();
-    current.model = group; world.add(group);
-    current.steps = Math.max(1, group.userData.numBuildingSteps || 1);
-    current.parts = conv.parts;
-    current.edges = [];
-    group.traverse(o => { if (o.isLineSegments) current.edges.push(o); });
-    applyEdges();
-    setStep(current.steps);
-    fitView();
-
-    modelName.textContent = conv.name;
-    modelMeta.textContent = `${conv.partTotal} parts · ${conv.uniqueParts} lots${conv.subModels ? ` · ${conv.subModels} sub-model${conv.subModels > 1 ? 's' : ''}` : ''}`;
-    renderParts(conv.parts);
-    $('fileInfo').textContent = [
-      file.name, `Stud.io ${info.version || '?'}`, `${conv.partTotal} parts, ${conv.uniqueParts} lots`,
-      `${current.steps} build step${current.steps > 1 ? 's' : ''}`, `built in ${(ms / 1000).toFixed(1)} s`,
-    ].join(' · ');
-    const wl = $('warnList'); wl.innerHTML = ''; wl.hidden = !conv.warnings.length;
-    for (const w of conv.warnings) { const li = document.createElement('li'); li.textContent = w; wl.appendChild(li); }
-
-    overlay.hidden = true; rail.hidden = false;
+    const isZip = buf.length > 3 && buf[0] === 0x50 && buf[1] === 0x4b;
+    if (isZip) await openStudio(file, buf);
+    else await openLdraw(file, buf);
     if (!keepRecent) rememberFile(file).catch(() => {});
   } catch (e) {
     console.error(e);
     showError('Could not open this file', e && e.message ? e.message : String(e));
   }
+}
+
+async function openStudio(file, buf) {
+  let zip;
+  try { zip = unzipSync(buf); } catch (e) { throw new Error('This file is not a readable Stud.io archive. It should be a .io file saved by Stud.io 2.x.'); }
+  const names = Object.keys(zip);
+  if (zip['thumbnail.png']) {
+    try { thumb.src = URL.createObjectURL(new Blob([zip['thumbnail.png']], { type: 'image/png' })); thumb.hidden = false; } catch (_) {}
+  }
+  const model2 = zip['model2.ldr'] ? strFromU8(zip['model2.ldr']) : null;
+  const model = zip['model.ldr'] ? strFromU8(zip['model.ldr']) : null;
+  if (!model2 && !model) throw new Error(`No model found inside the archive (files: ${names.join(', ') || 'none'}).`);
+  if (!model2) throw new Error('This .io file does not embed part geometry (no model2.ldr), so there is nothing to draw without a parts library.');
+  let info = {};
+  try { info = JSON.parse(strFromU8(zip['.info'] || new Uint8Array())) || {}; } catch (_) {}
+
+  setStatus(baseName(file.name), 'Matching colours and parts.', model2.length > 1e6 ? `${(model2.length / 1048576).toFixed(1)} MB of geometry` : '');
+  await nextFrame();
+  const conv = convertIo(model || model2, model2, LD_COLOURS, { certify: true });
+  setStatus(conv.name, `Building ${conv.partTotal} parts${conv.stepCount ? ` across ${conv.stepCount + 1} steps` : ''}.`, settings.smooth ? 'Smooth shading on' : 'Flat shading');
+  await nextFrame();
+  const loader = makeLoader();
+  const t0 = performance.now();
+  const group = await new Promise((resolve, reject) => loader.parse(conv.text, resolve, reject));
+  await showModel(group, { ...conv, source: `Stud.io ${info.version || '?'}` }, file, performance.now() - t0);
+}
+
+async function openLdraw(file, buf) {
+  if (!LDRAW_LIBRARY) throw new Error('This file is a plain LDraw model (.ldr / .mpd). This copy of the viewer can only draw Stud.io .io files, which carry their own part shapes.');
+  const text = new TextDecoder('utf-8').decode(buf);
+  if (!/^\s*[01]\s/m.test(text)) throw new Error('This does not look like a Stud.io .io file or an LDraw .ldr / .mpd file.');
+  const meta = summariseLdraw(text);
+  meta.warnings = [];
+  setStatus(meta.name || baseName(file.name), `Fetching shapes for ${meta.uniqueParts} part types from the LDraw library.`, 'Needs a connection the first time; parts are kept for next time');
+  await nextFrame();
+
+  const manager = new THREE.LoadingManager();
+  let loaded = 0;
+  manager.onProgress = (url, n, total) => { loaded = n; ovStatus.textContent = `${n} library files fetched`; };
+  const loader = makeLoader(manager);
+  loader.setPartsLibraryPath(LDRAW_LIBRARY);
+  const missing = new Set();
+  const origWarn = console.warn;
+  console.warn = (...a) => { const s = a.map(String).join(' '); const m = s.match(/Subobject "([^"]+)" could not be loaded/); if (m) missing.add(m[1].replace(/^(parts|p)\//, '')); origWarn.apply(console, a); };
+  const t0 = performance.now();
+  let group;
+  try {
+    group = await new Promise((resolve, reject) => loader.parse(meta.text, resolve, reject));
+  } finally { console.warn = origWarn; }
+  if (!navigator.onLine && loaded === 0 && missing.size) throw new Error('No connection, and the parts this model needs have not been fetched before.');
+  if (missing.size) meta.warnings.push(`${missing.size} part file${missing.size > 1 ? 's' : ''} could not be found in the LDraw library and ${missing.size > 1 ? 'were' : 'was'} skipped: ${[...missing].slice(0, 8).join(', ')}${missing.size > 8 ? '…' : ''}`);
+  meta.source = 'LDraw file';
+  await showModel(group, meta, file, performance.now() - t0);
+  describeParts(meta.parts).then(() => { if (current.parts === meta.parts) renderParts(meta.parts, $('partsSearch').value); }).catch(() => {});
 }
 
 function applyEdges() {
@@ -1060,7 +1169,7 @@ async function start() {
     const bytes = new Uint8Array(await r.arrayBuffer());
     await openFile(new File([bytes], 'BVS 10 Main 3.io', { type: 'application/zip' }), { keepRecent: true });
   } catch (e) {
-    showError('Brick Viewer', 'Open a Stud.io .io file to spin it around in 3D. Files are only read, never changed.');
+    showError('Brick Viewer', 'Open a Stud.io .io file (or an LDraw .ldr / .mpd) to spin it around in 3D. Files are only read, never changed.');
   }
 }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

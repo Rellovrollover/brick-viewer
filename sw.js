@@ -1,6 +1,6 @@
 // Brick Viewer service worker: cache the app shell and the three.js/fflate modules so the
 // viewer opens and renders with no connection after the first visit.
-const CACHE = 'brick-viewer-v1';
+const CACHE = 'brick-viewer-v2';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png', './samples/bvs10.io'];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -11,7 +11,7 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET' || !/^https?:/.test(req.url)) return;
-  const cacheable = new URL(req.url).origin === location.origin || /cdn\.jsdelivr\.net|fonts\.(googleapis|gstatic)\.com/.test(req.url);
+  const cacheable = new URL(req.url).origin === location.origin || /cdn\.jsdelivr\.net|fonts\.(googleapis|gstatic)\.com|raw\.githubusercontent\.com\/gkjohnson\/ldraw-parts-library\//.test(req.url);
   if (!cacheable) return;
   e.respondWith(
     caches.match(req).then((hit) => hit || fetch(req).then((res) => {
