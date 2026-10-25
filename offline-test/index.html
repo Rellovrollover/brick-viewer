@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>NoteCompanion Offline Test</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="NC Offline">
+<meta name="theme-color" content="#1f3a5f">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="../icons/icon-180.png">
+<style>
+  /* Layout: one column, status strip on top, notebook below. */
+  :root {
+    --bg: #f6f4ef; --card: #ffffff; --fg: #1d1f24; --muted: #6b6f78;
+    --line: #dcd8cf; --accent: #1f3a5f; --good: #2d7a4f; --warn: #b4620e; --bad: #b3261e;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #15171c; --card: #1f2229; --fg: #ecebe6; --muted: #9a9ea8; --line: #343842; --accent: #8fb4e8; --good: #6fcf97; --warn: #f0a94a; --bad: #ff7b72; color-scheme: dark; }
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.45 -apple-system, "Segoe UI", system-ui, sans-serif;
+    padding-block: env(safe-area-inset-top, 0px) env(safe-area-inset-bottom, 0px);
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  main { max-width: 36rem; margin: 0 auto; display: grid; gap: 16px; padding-block: 16px 32px; }
+  h1 { font-size: 1.25rem; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 4px 0 0; font-size: .95rem; }
+  .status { display: grid; gap: 8px; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+  .row b { font-weight: 600; }
+  .pill { font-family: var(--mono); font-size: .8rem; padding: 3px 9px; border-radius: 999px; border: 1px solid currentColor; }
+  .ok { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); } .dim { color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 10px; }
+  textarea { width: 100%; box-sizing: border-box; min-height: 4.5rem; font: inherit; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); resize: vertical; }
+  button { font: inherit; font-weight: 600; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  button.quiet { background: transparent; color: var(--accent); }
+  button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  ul.notes { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  ul.notes li { display: flex; gap: 10px; align-items: baseline; padding: 8px 10px; border-left: 3px solid var(--line); background: var(--bg); border-radius: 0 8px 8px 0; }
+  ul.notes li.pending { border-left-color: var(--warn); }
+  ul.notes li.synced { border-left-color: var(--good); }
+  ul.notes time { font-family: var(--mono); font-size: .75rem; color: var(--muted); white-space: nowrap; }
+  ul.notes span { min-width: 0; overflow-wrap: anywhere; }
+  ol { margin: 0; padding-left: 1.2rem; display: grid; gap: 6px; }
+  .empty { color: var(--muted); font-size: .95rem; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>NoteCompanion offline test</h1>
+    <p class="sub">A throwaway page to check that a home-screen web app opens and saves with no signal.</p>
+  </header>
+
+  <section class="status" aria-label="Status">
+    <div class="row"><b>Connection</b><span id="net" class="pill dim">checking</span></div>
+    <div class="row"><b>Offline cache</b><span id="sw" class="pill dim">checking</span></div>
+    <div class="row"><b>Storage kept by iOS</b><span id="persist" class="pill dim">checking</span></div>
+    <div class="row"><b>Opened as</b><span id="mode" class="pill dim">checking</span></div>
+    <div class="row"><b>Page loads on this device</b><span id="loads" class="pill dim">0</span></div>
+  </section>
+
+  <section class="card" aria-label="Offline notes">
+    <label for="note"><b>Write a note (works offline)</b></label>
+    <textarea id="note" placeholder="Type anything, then Save"></textarea>
+    <div class="actions">
+      <button id="save" type="button">Save note</button>
+      <button id="sync" type="button" class="quiet">Sync pending</button>
+      <button id="clear" type="button" class="quiet">Clear all</button>
+    </div>
+    <p id="pending" class="empty">No notes yet.</p>
+    <ul id="list" class="notes"></ul>
+  </section>
+
+  <section class="card" aria-label="How to run the test">
+    <b>How to run it</b>
+    <ol>
+      <li>In Safari, Share → <b>Add to Home Screen</b>, then open it from the icon once while online.</li>
+      <li>Turn on <b>Airplane Mode</b>. Swipe the app away to force-quit it.</li>
+      <li>Open it from the icon again. If this page appears, the cache works.</li>
+      <li>Save a note. It should show as <span class="warn">pending</span>. Force-quit and reopen; it should still be there.</li>
+      <li>Turn Airplane Mode off and tap <b>Sync pending</b> (or wait). Notes turn <span class="ok">synced</span>.</li>
+      <li>Leave the app alone for a week, then open it once more to see whether iOS kept the notes.</li>
+    </ol>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const set = (id, text, cls) => { const el = $(id); el.textContent = text; el.className = 'pill ' + cls; };
+
+  // Connection
+  const net = () => set('net', navigator.onLine ? 'online' : 'offline', navigator.onLine ? 'ok' : 'warn');
+  net(); addEventListener('online', () => { net(); syncPending(); }); addEventListener('offline', net);
+
+  // Opened as home-screen app or in Safari
+  const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  set('mode', standalone ? 'home-screen app' : 'Safari tab', standalone ? 'ok' : 'warn');
+
+  // Load counter (localStorage)
+  try {
+    const n = (parseInt(localStorage.getItem('loads') || '0', 10) || 0) + 1;
+    localStorage.setItem('loads', String(n));
+    set('loads', String(n), 'ok');
+  } catch (e) { set('loads', 'blocked', 'bad'); }
+
+  // Service worker
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').then((reg) => {
+      const state = () => {
+        if (navigator.serviceWorker.controller) set('sw', 'cached, ready offline', 'ok');
+        else set('sw', 'installing, reload once', 'warn');
+      };
+      state();
+      navigator.serviceWorker.addEventListener('controllerchange', state);
+      reg.addEventListener('updatefound', () => { const w = reg.installing; w && w.addEventListener('statechange', state); });
+    }).catch(() => set('sw', 'failed to register', 'bad'));
+  } else {
+    set('sw', 'not supported', 'bad');
+  }
+
+  // Persistent storage request
+  if (navigator.storage && navigator.storage.persist) {
+    navigator.storage.persisted().then((p) => p ? set('persist', 'yes', 'ok') : navigator.storage.persist().then((g) => set('persist', g ? 'yes' : 'not promised', g ? 'ok' : 'warn')));
+  } else {
+    set('persist', 'unknown', 'dim');
+  }
+
+  // IndexedDB notes
+  let db;
+  const open = () => new Promise((res, rej) => {
+    const r = indexedDB.open('nc-offline-test', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('notes', { keyPath: 'id' });
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+  const tx = (mode, fn) => new Promise((res, rej) => {
+    const t = db.transaction('notes', mode); const s = t.objectStore('notes'); const out = fn(s);
+    t.oncomplete = () => res(out && out.result !== undefined ? out.result : out);
+    t.onerror = () => rej(t.error);
+  });
+  const all = () => tx('readonly', (s) => s.getAll());
+
+  const fmt = (ms) => new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  async function render() {
+    const notes = (await all()).sort((a, b) => b.id - a.id);
+    const list = $('list'); list.innerHTML = '';
+    const pend = notes.filter((n) => !n.synced).length;
+    $('pending').textContent = notes.length ? (pend ? `${pend} pending, ${notes.length - pend} synced` : `All ${notes.length} synced`) : 'No notes yet.';
+    for (const n of notes) {
+      const li = document.createElement('li'); li.className = n.synced ? 'synced' : 'pending';
+      const t = document.createElement('time'); t.textContent = fmt(n.id);
+      const s = document.createElement('span'); s.textContent = n.text;
+      li.append(t, s); list.append(li);
+    }
+  }
+  async function syncPending() {
+    if (!navigator.onLine) return;
+    const notes = await all();
+    await tx('readwrite', (s) => { for (const n of notes) if (!n.synced) s.put({ ...n, synced: Date.now() }); });
+    render();
+  }
+  $('save').addEventListener('click', async () => {
+    const text = $('note').value.trim(); if (!text) return;
+    await tx('readwrite', (s) => s.put({ id: Date.now(), text, synced: 0 }));
+    $('note').value = '';
+    render();
+    if (navigator.onLine) syncPending();
+  });
+  $('sync').addEventListener('click', syncPending);
+  $('clear').addEventListener('click', async () => { await tx('readwrite', (s) => s.clear()); render(); });
+
+  open().then((d) => { db = d; render(); }).catch(() => { $('pending').textContent = 'IndexedDB is blocked on this device.'; });
+})();
+</script>
+</body>
+</html>
